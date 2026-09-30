@@ -1,7 +1,7 @@
 # stm32_com_port — справочник по API
 
 Дисклеймер: при расхождениях с заголовочными файлами (`scom_frame.h`, `scom_crc32.h`,
-`scom_stm32.h`, `scom_linux.h`) ориентируйтесь на `.h` — они первичны, этот справочник — их
+`scom_stm32.h`, `scom_host.h`) ориентируйтесь на `.h` — они первичны, этот справочник — их
 сжатый пересказ.
 
 ## Оглавление
@@ -11,9 +11,9 @@
 - [STM32: регистрация экземпляра](#stm32-регистрация-экземпляра)
 - [STM32: обработчики USB](#stm32-обработчики-usb)
 - [STM32: операционные функции](#stm32-операционные-функции)
-- [Linux: типы](#linux-типы)
-- [Linux: открытие и закрытие](#linux-открытие-и-закрытие)
-- [Linux: операционные функции](#linux-операционные-функции)
+- [Хост: типы](#хост-типы)
+- [Хост: открытие и закрытие](#хост-открытие-и-закрытие)
+- [Хост: операционные функции](#хост-операционные-функции)
 - [Ядро: CRC32 и разбор кадров](#ядро-crc32-и-разбор-кадров)
 
 ---
@@ -25,15 +25,17 @@
 | Define | По умолчанию | Описание |
 |---|---|---|
 | `SCOM_MAX_PAYLOAD_SIZE` | `1024U` | максимальный размер передаваемой структуры, байт |
-| `SCOM_PACKED` | `__attribute__((packed))` | атрибут упакованной структуры |
+| `SCOM_PACK_BEGIN` / `SCOM_PACK_END` | pragma pack(1) | упаковка структур на любом компиляторе (GCC, Clang, MSVC, armclang, IAR) |
+| `SCOM_PACKED` | `__attribute__((packed))`, для MSVC пусто | атрибут упаковки только для GCC/Clang |
+| `SCOM_ALIGN4` | `aligned(4)`, для MSVC пусто | выравнивание внутренних буферов |
 | `SCOM_STATIC_ASSERT(cond, name)` | — | проверка условия на этапе компиляции (C99) |
 | `SCOM_MAX_INSTANCES` | `2U` | STM32: число экземпляров (по одному на USB-порт) |
 | `SCOM_DEFAULT_TX_TIMEOUT_MS` | `50U` | STM32: таймаут зависшей передачи по умолчанию, мс |
 | `SCOM_GET_TICK_MS()` | `HAL_GetTick()` | STM32: источник миллисекундного времени |
 | `SCOM_ENTER_CRITICAL(state)` | PRIMASK | STM32: вход в критическую секцию |
 | `SCOM_EXIT_CRITICAL(state)` | PRIMASK | STM32: выход из критической секции |
-| `SCOM_LINUX_DEVICE_MAX` | `128U` | Linux: максимальная длина пути к устройству |
-| `SCOM_LINUX_WRITE_TIMEOUT_MS` | `100` | Linux: максимум ожидания готовности порта на запись, мс |
+| `SCOM_HOST_DEVICE_MAX` | `128U` | хост: максимальная длина имени порта |
+| `SCOM_HOST_WRITE_TIMEOUT_MS` | `100` | хост: максимум ожидания готовности порта на запись, мс |
 
 Формат кадра: `0xA5 0x5A | LEN (2, LE) | структура (LEN) | CRC32 (4, LE)`; накладные расходы —
 `SCOM_FRAME_OVERHEAD` = 8 байт.
@@ -141,66 +143,70 @@ USB), `data` валиден только во время вызова.
 
 ---
 
-## Linux: типы
+## Хост: типы
 
-Заголовок: `scom_linux.h`.
+Заголовок: `scom_host.h`. Один API для Linux и Windows.
 
-### `SCOM_LinuxConfig_t`
+### `SCOM_HostConfig_t`
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `device` | `const char*` | путь к порту, например `/dev/ttyACM0` |
+| `device` | `const char*` | имя порта: Linux `"/dev/ttyACM0"`; Windows `"COM5"` (для COM10 и выше префикс `\\.\` добавляется автоматически) |
 | `tx_size` | `uint16_t` | размер отправляемой структуры (её принимает STM32), `0` — только приём |
 | `rx_size` | `uint16_t` | размер принимаемой структуры (её отправляет STM32), `0` — только передача |
 | `rx_timeout_ms` | `uint32_t` | тайм-аут связи, мс; `0` — контроль отключён |
 
-### `SCOM_LinuxStats_t`
+### `SCOM_HostStats_t`
 
 Поля `rx_frames`, `rx_crc_errors`, `rx_size_errors`, `tx_frames` (`uint32_t`).
 
-### `SCOM_LinuxHandle_t`
+### `SCOM_HostHandle_t`
 
 Память выделяет пользователь. Публичные поля: `config`, `stats`, `device`. Несколько
 экземпляров (несколько STM32) независимы.
 
 ---
 
-## Linux: открытие и закрытие
+## Хост: открытие и закрытие
 
-### `int SCOM_LinuxOpen(SCOM_LinuxHandle_t *h, const SCOM_LinuxConfig_t *config)`
+### `int SCOM_HostOpen(SCOM_HostHandle_t *h, const SCOM_HostConfig_t *config)`
 
-Открывает порт (raw 8N1, неблокирующий) и готовит экземпляр. Возвращает `0` или `-1` (при ошибке
-порта установлен `errno`).
+Открывает порт (8N1, без управления потока; на Windows включается DTR) и готовит экземпляр.
+Возвращает `0` или `-1` (при ошибке порта: Linux — `errno`, Windows — `GetLastError()`).
 
-### `void SCOM_LinuxClose(SCOM_LinuxHandle_t *h)`
+### `void SCOM_HostClose(SCOM_HostHandle_t *h)`
 
 Закрывает порт и освобождает ресурсы экземпляра.
 
 ---
 
-## Linux: операционные функции
+## Хост: операционные функции
 
-### `int SCOM_LinuxPoll(SCOM_LinuxHandle_t *h, int timeout_ms)`
+### `int SCOM_HostPoll(SCOM_HostHandle_t *h, int timeout_ms)`
 
 Ждёт данные до `timeout_ms` (`0` — не ждать), вычитывает всё доступное и разбирает кадры.
 Вызывать из одного потока. Возвращает число принятых валидных кадров (`0` и более) либо `-1` при
 ошибке порта (устройство отключено).
 
-### `int SCOM_LinuxSend(SCOM_LinuxHandle_t *h, const void *data)`
+### `int SCOM_HostSend(SCOM_HostHandle_t *h, const void *data)`
 
 Отправляет структуру размера `tx_size` в момент вызова; допускается из любого потока. Возвращает
-`0` или `-1` (неверные аргументы, порт не готов дольше `SCOM_LINUX_WRITE_TIMEOUT_MS`, порт
+`0` или `-1` (неверные аргументы, порт не готов дольше `SCOM_HOST_WRITE_TIMEOUT_MS`, порт
 отключён).
 
-### `int SCOM_LinuxGetRx(SCOM_LinuxHandle_t *h, void *out)`
+### `int SCOM_HostGetRx(SCOM_HostHandle_t *h, void *out)`
 
 Копирует последнюю принятую структуру (`rx_size` байт); допускается из любого потока. Возвращает
 `1`, если копия новая, `0` — новых данных нет.
 
-### `int SCOM_LinuxIsTimeout(SCOM_LinuxHandle_t *h)`
+### `int SCOM_HostIsTimeout(SCOM_HostHandle_t *h)`
 
 Возвращает `1`, если с момента последнего валидного кадра (или открытия порта) прошло больше
 `rx_timeout_ms`; иначе `0`.
+
+### `uint64_t SCOM_HostNowMs(void)`
+
+Монотонное время в миллисекундах, одинаково на Linux и Windows (для таймеров в вашем коде).
 
 ---
 

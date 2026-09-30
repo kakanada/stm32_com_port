@@ -4,7 +4,7 @@
  * @brief   Реализация CRC32 (IEEE 802.3) на табличном алгоритме.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.0
+ * @version 1.1
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия

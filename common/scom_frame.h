@@ -2,10 +2,10 @@
  ******************************************************************************
  * @file    scom_frame.h
  * @brief   Формат кадра и потоковый разборщик кадров - общий код для STM32
- *          и Linux частей библиотеки (не зависит от платформы).
+ *          и хостовой частей библиотеки (не зависит от платформы).
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.0
+ * @version 1.1
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -25,7 +25,7 @@ extern "C" {
 
 /* ------------------------------------------------------------------------ */
 /*  Конфигурация (define-ы, меняются до включения заголовка ИЛИ ключом -D,  */
-/*  ОДИНАКОВО на STM32 и на Linux)                                          */
+/*  ОДИНАКОВО на STM32 и на хосте)                                         */
 /* ------------------------------------------------------------------------ */
 
 /** Максимальный размер полезной нагрузки (структуры) в байтах. Определяет
@@ -35,17 +35,42 @@ extern "C" {
 #define SCOM_MAX_PAYLOAD_SIZE        1024U
 #endif
 
-/** Атрибут "упакованная структура" (без дыр выравнивания). Применять ко
- *  всем структурам, передаваемым через библиотеку: typedef struct SCOM_PACKED
- *  { ... } My_t; Для компилятора без __attribute__ переопределите. */
-#ifndef SCOM_PACKED
-#define SCOM_PACKED                  __attribute__((packed))
+/** Упаковка структур без дыр выравнивания. Оборачивайте ВСЕ структуры,
+ *  передаваемые через библиотеку, одинаково на всех компиляторах (GCC, Clang,
+ *  MSVC, armclang, IAR):
+ *      SCOM_PACK_BEGIN
+ *      typedef struct { ... } My_t;
+ *      SCOM_PACK_END
+ *  Для другого компилятора переопределите обе макрокоманды. */
+#ifndef SCOM_PACK_BEGIN
+#if defined(_MSC_VER)
+#define SCOM_PACK_BEGIN              __pragma(pack(push, 1))
+#define SCOM_PACK_END                __pragma(pack(pop))
+#else
+#define SCOM_PACK_BEGIN              _Pragma("pack(push, 1)")
+#define SCOM_PACK_END                _Pragma("pack(pop)")
+#endif
 #endif
 
-/** Выравнивание буферов по 4 байта: безопасно для структур без SCOM_PACKED
- *  (float/uint32_t по выровненному адресу). Для другого компилятора переопределите. */
+/** Атрибут "упакованная структура" (только GCC/Clang/armclang): typedef struct
+ *  SCOM_PACKED { ... } My_t; Для MSVC пустой - используйте SCOM_PACK_BEGIN/END. */
+#ifndef SCOM_PACKED
+#if defined(_MSC_VER)
+#define SCOM_PACKED
+#else
+#define SCOM_PACKED                  __attribute__((packed))
+#endif
+#endif
+
+/** Выравнивание буферов по 4 байта: безопасно для структур без упаковки
+ *  (float/uint32_t по выровненному адресу). На MSVC (x64-хост, невыровненный
+ *  доступ допустим) пустой. Для другого компилятора переопределите. */
 #ifndef SCOM_ALIGN4
+#if defined(_MSC_VER)
+#define SCOM_ALIGN4
+#else
 #define SCOM_ALIGN4                  __attribute__((aligned(4)))
+#endif
 #endif
 
 /** Проверка на этапе компиляции (C99, без static_assert). name - любой
