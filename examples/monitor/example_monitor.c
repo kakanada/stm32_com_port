@@ -5,7 +5,7 @@
  *          монитор. Для своей структуры правится только example_draw().
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.3
+ * @version 1.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия

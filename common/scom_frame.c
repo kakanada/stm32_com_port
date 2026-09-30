@@ -5,7 +5,7 @@
  *          независимый код).
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.3
+ * @version 1.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -78,7 +78,7 @@ SCOM_ParseResult_t SCOM_ParserFeed(SCOM_Parser_t *p, const uint8_t *data,
 
             case SCOM_ST_LEN1:
             {
-                const uint16_t len_field = (uint16_t)(p->len_lo | ((uint16_t)b << 8));
+                const uint16_t len_field = (uint16_t)(p->len_lo | ((uint16_t)b << 8U));
 
                 i++;
                 if (len_field != p->payload_size)
@@ -89,7 +89,7 @@ SCOM_ParseResult_t SCOM_ParserFeed(SCOM_Parser_t *p, const uint8_t *data,
                 else
                 {
                     /* CRC покрывает поле длины и нагрузку. */
-                    const uint8_t hdr[2] = { p->len_lo, b };
+                    const uint8_t hdr[2U] = { p->len_lo, b };
 
                     p->crc   = SCOM_Crc32Update(SCOM_CRC32_INIT, hdr, 2U);
                     p->pos   = 0U;
@@ -146,15 +146,15 @@ uint16_t SCOM_FrameBuild(uint8_t *out, const void *payload, uint16_t payload_siz
     out[n++] = SCOM_SOF1;
     out[n++] = SCOM_SOF2;
     out[n++] = (uint8_t)(payload_size & 0xFFU);
-    out[n++] = (uint8_t)(payload_size >> 8);
+    out[n++] = (uint8_t)(payload_size >> 8U);
     memcpy(&out[n], payload, payload_size);
     n = (uint16_t)(n + payload_size);
 
     /* CRC по LEN (2 байта) + нагрузке, т.е. по всему, что после SOF. */
-    crc = SCOM_Crc32(&out[2], (size_t)payload_size + 2U);
+    crc = SCOM_Crc32(&out[2U], (size_t)payload_size + 2U);
     out[n++] = (uint8_t)(crc & 0xFFU);
-    out[n++] = (uint8_t)((crc >> 8) & 0xFFU);
-    out[n++] = (uint8_t)((crc >> 16) & 0xFFU);
-    out[n++] = (uint8_t)((crc >> 24) & 0xFFU);
+    out[n++] = (uint8_t)((crc >> 8U) & 0xFFU);
+    out[n++] = (uint8_t)((crc >> 16U) & 0xFFU);
+    out[n++] = (uint8_t)((crc >> 24U) & 0xFFU);
     return n;
 }

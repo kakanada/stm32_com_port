@@ -6,7 +6,7 @@
  *          scom_host_win32.c.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.3
+ * @version 1.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -116,7 +116,7 @@ static int scom_host_process_bytes(SCOM_HostHandle_t *h, const uint8_t *buf, siz
 
 int SCOM_HostPoll(SCOM_HostHandle_t *h, int timeout_ms)
 {
-    uint8_t buf[512];
+    uint8_t buf[512U];
     int frames = 0;
     int n;
 

@@ -4,7 +4,7 @@
  * @brief   Реализация CRC32 (IEEE 802.3) на табличном алгоритме.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.3
+ * @version 1.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -16,7 +16,7 @@
 
 /* Таблица лежит во flash (const): 1 КБайт, зато ~6 тактов на байт вместо
  * побитового расчёта. Полином 0xEDB88320 (отражённый), как в zlib. */
-static const uint32_t s_crc32_table[256] =
+static const uint32_t s_crc32_table[256U] =
 {
     0x00000000U, 0x77073096U, 0xEE0E612CU, 0x990951BAU,
     0x076DC419U, 0x706AF48FU, 0xE963A535U, 0x9E6495A3U,
@@ -90,7 +90,7 @@ uint32_t SCOM_Crc32Update(uint32_t crc, const void *data, size_t len)
 
     while (len > 0U)
     {
-        crc = s_crc32_table[(crc ^ *p) & 0xFFU] ^ (crc >> 8);
+        crc = s_crc32_table[(crc ^ *p) & 0xFFU] ^ (crc >> 8U);
         p++;
         len--;
     }

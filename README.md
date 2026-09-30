@@ -10,8 +10,9 @@ x64) по USB COM-порту. Вы описываете две структур�
 - Обмен структурами в обе стороны, структуры туда и обратно разные.
 - Проверка CRC32 на каждом кадре; испорченные кадры отбрасываются, поток сам восстанавливается.
 - Отправка в момент вызова `Send`; ориентир по частоте — до 100 Гц.
+- STM32: обработчик принятой структуры задаётся в конфигурации при инициализации.
 - STM32: работа без ОС и без `malloc`, безопасно относительно любых прерываний.
-- STM32: до двух (настраивается) независимых экземпляров, например USB FS и USB HS сразу.
+- STM32: несколько независимых экземпляров (по умолчанию два), например USB FS и USB HS сразу.
 - Хост: один код и один API для Linux и Windows, безопасные `Send` и `GetRx` из разных потоков.
 - Контроль потери связи (тайм-аут) и счётчики ошибок на обеих сторонах.
 - Готовые примеры для STM32, Linux и Windows, которые работают друг с другом.
@@ -20,8 +21,8 @@ x64) по USB COM-порту. Вы описываете две структур�
 
 | Параметр | Значение |
 |---|---|
-| Connectivity → USB_OTG_FS (или HS) | Mode: Device_Only |
-| Middleware → USB_DEVICE → Class For FS (HS) IP | Communication Device Class (Virtual Port Com) |
+| Connectivity -> USB_OTG_FS (или HS) | Mode: Device_Only |
+| Middleware -> USB_DEVICE -> Class For FS (HS) IP | Communication Device Class (Virtual Port Com) |
 | Тактирование USB | 48 МГц (Clock Configuration) |
 | NVIC | прерывание USB включено (приоритет любой) |
 
@@ -29,21 +30,22 @@ x64) по USB COM-порту. Вы описываете две структур�
 
 ## Быстрый старт
 
-### Как это устроено
+Файлы для проекта STM32 (CubeIDE): `common/scom_crc32.c/.h`, `common/scom_frame.c/.h`,
+`stm32/scom_stm32.c/.h` и ваш `my_types.h`; `.c` — в `Core/Src`, `.h` — в `Core/Inc`. Эти папки
+уже входят в пути сборки, настраивать ничего не нужно. Для Keil, IAR и Makefile добавьте файлы
+в проект, а папки с `.h` — в Include paths.
 
-```
-      STM32                                          компьютер
-  SCOM_Send(&a)       ---- USB-кабель ---->  SCOM_HostGetRx(&a)     структура StmToHost_t
-  SCOM_GetRx(&b)      <---- USB-кабель ----  SCOM_HostSend(&b)      структура HostToStm_t
-```
+Файлы для программы на компьютере: `common/scom_crc32.c/.h`, `common/scom_frame.c/.h`,
+`host/scom_host.c/.h`, `host/scom_host_port.h`, `host/scom_host_posix.c`,
+`host/scom_host_win32.c` и ваш `my_types.h`. Все `.c` добавляются в сборку; файл для чужой ОС
+внутри пустой.
 
-Каждая сторона отправляет свою структуру, когда вызывает `Send`, и забирает пришедшую от другой
-стороны через `GetRx`. Между ними библиотека делает всё остальное. Структуры `StmToHost_t` и
-`HostToStm_t` здесь — просто названия по направлению, назовите и заполните свои.
+### Общий файл со структурами
 
-### Шаг 1. Общий файл со структурами
-
-Один и тот же файл подключается и в проект STM32, и в программу для компьютера.
+Один и тот же `my_types.h` подключается и в проект STM32, и в программу для компьютера.
+Структуры называйте и заполняйте своими; здесь названия просто указывают направление.
+Используйте только типы фиксированной ширины (`uint8_t`, `int16_t`, `uint32_t`, `float`); без
+указателей, `bool`, `enum` и `long`.
 
 ```c
 /* my_types.h */
@@ -57,112 +59,153 @@ typedef struct { uint8_t mode; float value; } HostToStm_t;       /* компью
 SCOM_PACK_END
 ```
 
-Правила: только типы фиксированной ширины (`uint8_t`, `int16_t`, `uint32_t`, `float`), без
-указателей, `bool`, `enum` и `long`.
+### STM32: main.c
 
-### Шаг 2. STM32: добавьте файлы и код в `main.c`
-
-Скопируйте в проект `common/*` и `stm32/*`, пропишите эти папки в Include paths.
+Вставляйте код только внутри блоков `USER CODE BEGIN ... / USER CODE END ...`: остальное CubeMX
+перезаписывает при генерации. Название блока указано в комментарии.
 
 ```c
-/* main.c */
+/* USER CODE BEGIN Includes */
 #include "scom_stm32.h"
-#include "usbd_cdc_if.h"
 #include "my_types.h"
+/* USER CODE END Includes */
+```
 
-SCOM_Handle_t *g_scom;                 /* нужен и в usbd_cdc_if.c */
+```c
+/* USER CODE BEGIN PV */
+SCOM_Handle_t *g_scom;                 /* экземпляр библиотеки, нужен и в usbd_cdc_if.c */
+StmToHost_t tx;                        /* то, что отправляем компьютеру */
+volatile uint8_t g_mode;               /* поля принятой структуры; их пишет обработчик */
+volatile float   g_value;
+static uint32_t next_send;             /* когда отправлять следующий раз */
+/* USER CODE END PV */
+```
 
-/* usb_tx - "кнопка отправки" для библиотеки (объяснение ниже). SCOM_Send вызывает её САМА,
-   вам вызывать не нужно. Вернуть: 0 - USB принял данные, не 0 - USB занят. */
-static int usb_tx(void *user, const uint8_t *data, uint16_t len)
+Обработчик принятой структуры — ваша функция; библиотека сама вызывает её, когда от компьютера
+пришла целая структура с верным CRC32. Она работает в прерывании USB, поэтому должна быть
+короткой, а `data` действителен только внутри неё: забирайте нужные поля в свои переменные.
+
+```c
+/* USER CODE BEGIN 0 */
+static void on_rx(void *user, const void *data)
 {
+    const HostToStm_t *rx = (const HostToStm_t *)data;
     (void)user;
-    return (CDC_Transmit_FS((uint8_t *)data, len) == USBD_OK) ? 0 : -1;
+    g_mode  = rx->mode;
+    g_value = rx->value;
 }
+/* USER CODE END 0 */
+```
 
-int main(void)
-{
-    StmToHost_t tx = {0};              /* то, что отправляем компьютеру */
-    HostToStm_t rx = {0};              /* сюда придёт то, что отправил компьютер */
-    uint32_t    next_send = 0;
-    SCOM_Config_t cfg = {0};
+В функции `main()`, сразу после `MX_USB_DEVICE_Init();`:
 
-    /* ... HAL_Init(); SystemClock_Config(); MX_GPIO_Init(); MX_USB_DEVICE_Init(); ... */
+```c
+  /* USER CODE BEGIN 2 */
+  SCOM_Config_t cfg = {0};
+  cfg.port          = SCOM_PORT_USB_FS;      /* или SCOM_PORT_USB_HS */
+  cfg.tx_size       = sizeof(StmToHost_t);   /* размер структуры, которую ОТПРАВЛЯЕМ */
+  cfg.rx_size       = sizeof(HostToStm_t);   /* размер структуры, которую ПРИНИМАЕМ  */
+  cfg.on_rx         = on_rx;                 /* ваш обработчик принятой структуры    */
+  cfg.rx_timeout_ms = 200;                   /* нет кадров 200 мс - связь потеряна   */
+  g_scom = SCOM_Init(&cfg);                  /* NULL - ошибка конфигурации           */
+  /* USER CODE END 2 */
+```
 
-    cfg.tx_size       = sizeof(StmToHost_t);   /* размер структуры, которую ОТПРАВЛЯЕМ */
-    cfg.rx_size       = sizeof(HostToStm_t);   /* размер структуры, которую ПРИНИМАЕМ  */
-    cfg.tx_func       = usb_tx;
-    cfg.rx_timeout_ms = 200;                   /* нет кадров 200 мс - связь потеряна   */
-    g_scom = SCOM_Init(&cfg);                  /* NULL - ошибка конфигурации           */
+В бесконечном цикле `while (1)`:
 
-    while (1)
+```c
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    /* ПЕРЕДАЧА: например, раз в 10 мс. SCOM_BUSY - предыдущий кадр ещё уходит,
+       этот не отправлен; в следующий раз передайте свежие данные. */
+    if ((int32_t)(HAL_GetTick() - next_send) >= 0)
     {
-        /* ПРИЁМ: 1 - пришла новая структура и скопирована в rx, 0 - новой нет. */
-        if (SCOM_GetRx(g_scom, &rx))
-        {
-            /* здесь используйте rx.mode, rx.value */
-        }
-
-        /* ПЕРЕДАЧА: например, раз в 10 мс. */
-        if ((int32_t)(HAL_GetTick() - next_send) >= 0)
-        {
-            next_send = HAL_GetTick() + 10;
-            tx.counter++;                      /* заполните свои данные */
-            SCOM_Send(g_scom, &tx);            /* SCOM_OK или SCOM_BUSY (см. ниже) */
-        }
-
-        if (SCOM_IsTimeout(g_scom))
-        {
-            /* от компьютера нет кадров дольше 200 мс */
-        }
+        next_send = HAL_GetTick() + 10;
+        tx.counter++;                      /* заполните свои данные */
+        SCOM_Send(g_scom, &tx);
     }
+
+    if (SCOM_IsTimeout(g_scom))
+    {
+        /* от компьютера нет кадров дольше 200 мс */
+    }
+  }
+  /* USER CODE END 3 */
+```
+
+Вместо обработчика структуру можно забирать опросом: `SCOM_GetRx(g_scom, &rx)` возвращает `1`,
+если пришла новая (см. [API_REFERENCE.md](API_REFERENCE.md)).
+
+### STM32: usbd_cdc_if.c
+
+Файл лежит в `USB_DEVICE/App`. Тоже только внутри блоков `USER CODE`. В начале файла:
+
+```c
+/* USER CODE BEGIN INCLUDE */
+#include "scom_stm32.h"
+extern SCOM_Handle_t *g_scom;          /* создан в main.c */
+/* USER CODE END INCLUDE */
+```
+
+В функции `CDC_Receive_FS` добавьте первую строку в блоке `USER CODE BEGIN 6`, остальное
+оставьте как есть:
+
+```c
+static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
+{
+  /* USER CODE BEGIN 6 */
+  SCOM_OnReceive(g_scom, Buf, *Len);                 /* <-- добавить: передать принятые байты */
+  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
+  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  return (USBD_OK);
+  /* USER CODE END 6 */
 }
 ```
 
-**Что такое `usb_tx` и зачем она.** Библиотека не знает, как называется функция отправки в
-вашем проекте CubeMX (`CDC_Transmit_FS`, `CDC_Transmit_HS`) и к какому USB-порту вы подключены.
-Поэтому вы даёте ей «кнопку отправки»: свою маленькую функцию `usb_tx`, а указатель на неё
-кладёте в `cfg.tx_func`. Дальше библиотека нажимает эту кнопку сама: `SCOM_Send` собирает кадр и
-внутри вызывает `usb_tx`, передавая ей готовые байты. Вам вызывать `usb_tx` самому не нужно.
-
-Пишется один раз и всегда одинаково: вызвать функцию отправки CubeMX с теми же `data` и `len`
-и вернуть `0`, если USB принял данные, иначе не `0` (тогда `SCOM_Send` вернёт `SCOM_BUSY`).
-Для порта HS замените `CDC_Transmit_FS` на `CDC_Transmit_HS`. Параметр `user` можно не
-использовать (это ваш произвольный указатель из `cfg.user`, передаётся сюда обратно).
-
-### Шаг 3. STM32: два вызова в `usbd_cdc_if.c`
-
-Файл создан CubeMX. Добавьте вызовы внутри блоков `USER CODE`:
+В функции `CDC_TransmitCplt_FS` (блок `USER CODE BEGIN 13`). Вызов обязателен: без него после
+первой отправки следующая пройдёт только по тайм-ауту 50 мс. Если функции `CDC_TransmitCplt_FS`
+в файле нет (старая версия пакета STM32Cube), обновите пакет в CubeMX (Project Manager ->
+Firmware Version) и пересоздайте код.
 
 ```c
-extern SCOM_Handle_t *g_scom;          /* и #include "scom_stm32.h" вверху файла */
-
-static int8_t CDC_Receive_FS(uint8_t *Buf, uint32_t *Len)
-{
-    SCOM_OnReceive(g_scom, Buf, *Len);                 /* <-- добавить: передать байты */
-    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-    USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-    return (USBD_OK);
-}
-
 static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 {
-    SCOM_OnTxComplete(g_scom);                         /* <-- добавить: USB отправил кадр */
-    return USBD_OK;
+  uint8_t result = USBD_OK;
+  /* USER CODE BEGIN 13 */
+  SCOM_OnTxComplete(g_scom);                         /* <-- добавить: USB отправил кадр */
+  UNUSED(Buf);
+  UNUSED(Len);
+  UNUSED(epnum);
+  /* USER CODE END 13 */
+  return result;
 }
 ```
 
-Если `CDC_TransmitCplt_FS` в вашем файле нет (старая версия пакета прошивки STM32Cube),
-обновите пакет в CubeMX (Project Manager → Firmware Version) и пересоздайте код. Без этой функции
-библиотека работает, но отправляет заметно реже: буфер освобождается только по тайм-ауту
-`tx_timeout_ms` (50 мс).
+### STM32: второй USB-порт
 
-Второй USB-порт (HS) делается так же: свой `SCOM_Handle_t`, своя `usb_tx` с `CDC_Transmit_HS` и
-те же два вызова в `usbd_cdc_if.c` порта HS со своим хэндлом.
+Второй экземпляр создаётся с другим портом; те же два вызова добавьте в `CDC_Receive_HS` /
+`CDC_TransmitCplt_HS` со своим хэндлом `g_scom_hs`. Размеры структур и обработчики у экземпляров
+независимы.
 
-### Шаг 4. Компьютер (Linux и Windows): программа
+```c
+/* main.c: USER CODE BEGIN PV */
+SCOM_Handle_t *g_scom_hs;
 
-Скопируйте в проект `common/*` и `host/*` (все файлы, лишний для вашей ОС пуст).
+/* main.c: USER CODE BEGIN 2, после SCOM_Init для первого порта */
+SCOM_Config_t cfg_hs = {0};
+cfg_hs.port    = SCOM_PORT_USB_HS;         /* другой порт - другой экземпляр */
+cfg_hs.tx_size = sizeof(StmToHost_t);
+cfg_hs.rx_size = sizeof(HostToStm_t);
+cfg_hs.on_rx   = on_rx;                    /* можно свой обработчик */
+g_scom_hs = SCOM_Init(&cfg_hs);
+```
+
+### Компьютер: программа
+
+Файл `main.c` рядом с `my_types.h`.
 
 ```c
 #include <stdio.h>
@@ -189,7 +232,8 @@ int main(void)
 
     for (;;)
     {
-        /* Принять всё, что пришло (ждёт до 10 мс). -1 - порт пропал. */
+        /* Принять всё, что пришло (ждёт до 10 мс). Вызывать не реже раза в 10-20 мс.
+           -1 - порт пропал (кабель, перезагрузка STM32): закрыть и открыть заново. */
         if (SCOM_HostPoll(&com, 10) < 0)
         {
             break;
@@ -201,7 +245,7 @@ int main(void)
         }
 
         tx.mode = 1;
-        SCOM_HostSend(&com, &tx);                      /* отправить сейчас */
+        SCOM_HostSend(&com, &tx);          /* отправить сейчас, можно из любого потока */
     }
 
     SCOM_HostClose(&com);
@@ -209,181 +253,88 @@ int main(void)
 }
 ```
 
-Здесь структура отправляется на каждом проходе цикла; вы можете вызывать `SCOM_HostSend` в
-любой момент и из любого потока.
+Сборка (в папке с `main.c`, `my_types.h` и папками `common`, `host`).
 
-Сборка: Linux — `gcc -std=c99 -pthread` со всеми `.c` из `common` и `host`; Windows (Visual
-Studio) — добавьте те же файлы в проект x64. Номер порта на Windows смотрите в «Диспетчере
-устройств» → «Порты (COM и LPT)». На Linux порт доступен группе `dialout`
-(`sudo usermod -aG dialout $USER`), а `ModemManager` иногда занимает `/dev/ttyACM*`.
+Linux:
 
-### Шаг 5. Что должно получиться
+```bash
+gcc -std=c99 -Wall -pthread -Icommon -Ihost -I. main.c common/scom_crc32.c common/scom_frame.c host/scom_host.c host/scom_host_posix.c host/scom_host_win32.c -o app
+./app
+```
 
-Компьютер печатает растущий `counter` от STM32, а на STM32 `SCOM_GetRx` возвращает `1`, когда
-приходит структура от компьютера. Если не так, смотрите таблицу «Если что-то не работает» ниже.
+Windows (в «x64 Native Tools Command Prompt for VS»):
+
+```bat
+cl /std:c11 /W3 /Icommon /Ihost /I. main.c common\scom_crc32.c common\scom_frame.c host\scom_host.c host\scom_host_posix.c host\scom_host_win32.c /Fe:app.exe
+app.exe
+```
+
+В Visual Studio добавьте те же `.c` файлы в проект x64, а в Additional Include Directories
+укажите `common;host;.`. Номер COM-порта смотрите в «Диспетчере устройств», раздел «Порты (COM и
+LPT)». На Linux порт доступен группе `dialout` (`sudo usermod -aG dialout $USER`, затем
+перелогиньтесь); `ModemManager` иногда занимает `/dev/ttyACM*`.
 
 ### Готовые примеры
 
-Три примера уже работают друг с другом: общие структуры в `examples/example_types.h` (заглушки
-с вложенными структурами и массивом, замените своими). STM32 раз в 10 мс отправляет заглушку и
-принимает структуру от компьютера; компьютер раз в 10 мс отправляет свою и показывает принятую
-в консоли без мерцания. Строка `echo of what STM32 received from host` доказывает приём в обе
-стороны: STM32 копирует в свою структуру то, что принял от компьютера.
+Три примера работают друг с другом «из коробки». Структуры лежат в `examples/example_types.h`
+(заглушки с вложенными структурами и массивом, замените своими). STM32 раз в 10 мс отправляет
+заглушку и принимает структуру от компьютера; компьютер раз в 10 мс отправляет свою и выводит
+принятую в консоль без мерцания. Строка `echo of what STM32 received from host` подтверждает
+приём в обе стороны.
 
-| Пример | Файлы | Сборка и запуск |
+Пример STM32: скопируйте файлы проекта STM32 (см. выше), а также `examples/example_types.h` и
+`examples/stm32/example_stm32.c/.h` (`.c` в `Core/Src`, `.h` в `Core/Inc`) и добавьте по одной
+строке в блоки `USER CODE`:
+
+| Файл | Блок | Что вставить |
 |---|---|---|
-| STM32 | `examples/stm32/example_stm32.c/.h` | `Example_Init()` после `MX_USB_DEVICE_Init()`, `Example_Process()` в цикле, `Example_UsbOnReceive()` и `Example_UsbOnTxComplete()` в `usbd_cdc_if.c` |
-| Linux | `examples/linux/*`, `examples/monitor/*` | `cd examples/linux && make`, затем `./example_linux /dev/ttyACM0` |
-| Windows | `examples/windows/*`, `examples/monitor/*` | в «x64 Native Tools Command Prompt for VS»: `examples\windows\build_msvc.bat`, затем `build\example_windows.exe COM5` |
+| `main.c` | `Includes` | `#include "example_stm32.h"` |
+| `main.c` | `2` (после `MX_USB_DEVICE_Init();`) | `Example_Init();` |
+| `main.c` | `3` (внутри `while (1)`) | `Example_Process();` |
+| `usbd_cdc_if.c` | `INCLUDE` | `#include "example_stm32.h"` |
+| `usbd_cdc_if.c` | `6` (в начале `CDC_Receive_FS`) | `Example_UsbOnReceive(Buf, *Len);` |
+| `usbd_cdc_if.c` | `13` (в `CDC_TransmitCplt_FS`) | `Example_UsbOnTxComplete();` |
 
-Для STM32-примера добавьте в проект файлы `common/*`, `stm32/*`, `examples/example_types.h`,
-`examples/stm32/*` и пропишите папки `common`, `stm32`, `examples`, `examples/stm32` в Include
-paths.
+Светодиод по полю `led_on`: определите в настройках проекта `EXAMPLE_LED_PORT` и
+`EXAMPLE_LED_PIN` (например, `GPIOD` и `GPIO_PIN_12`); для USB HS —
+`EXAMPLE_USB_PORT=SCOM_PORT_USB_HS`.
+
+Пример Linux:
+
+```bash
+cd examples/linux
+make
+./example_linux /dev/ttyACM0
+```
+
+Пример Windows (в «x64 Native Tools Command Prompt for VS»):
+
+```bat
+examples\windows\build_msvc.bat
+examples\windows\build\example_windows.exe COM5
+```
 
 Для Linux и Windows работает и CMake: `cmake -S examples -B build`, затем
-`cmake --build build --config Release`. Светодиод по принятому полю `led_on`: определите
-`EXAMPLE_LED_PORT` и `EXAMPLE_LED_PIN` (например, `GPIOD` и `GPIO_PIN_12`); для USB HS —
-`EXAMPLE_CDC_TRANSMIT=CDC_Transmit_HS`. Чтобы вывести в монитор свою структуру, замените
-`example_types.h` и функцию `example_draw()` в `examples/monitor/example_monitor.c`.
-
-### Шпаргалка: что вызывать
-
-| Задача | STM32 | Компьютер |
-|---|---|---|
-| Запустить | `SCOM_Init(&cfg)` | `SCOM_HostOpen(&com, &cfg)` |
-| Принять данные | `SCOM_GetRx(h, &x)` → 1, если новые | `SCOM_HostPoll(&com, ms)`, затем `SCOM_HostGetRx(&com, &x)` |
-| Отправить | `SCOM_Send(h, &x)` | `SCOM_HostSend(&com, &x)` |
-| Проверить связь | `SCOM_IsTimeout(h)` → 1, если потеряна | `SCOM_HostIsTimeout(&com)` |
-| Счётчики ошибок | `h->stats` | `com.stats` |
-| Закрыть | не требуется | `SCOM_HostClose(&com)` |
+`cmake --build build --config Release`. Чтобы вывести в монитор свою структуру, замените
+`example_types.h` и код вывода в `examples/monitor/example_monitor.c`.
 
 Полный справочник по функциям и типам — [API_REFERENCE.md](API_REFERENCE.md).
-
-## Как это работает: важные подробности
-
-### Куда падают принятые данные на STM32
-
-```
-USB → CDC_Receive_FS() → SCOM_OnReceive() → сборка кадра + CRC32 → копия в хэндле → вы
-     (прерывание USB)                        (кадр цел и верен)      SCOM_GetRx() / on_rx
-```
-
-Верный кадр копируется в хэндл, а вы забираете его через `SCOM_GetRx` (в любом месте
-программы, копия ваша). Испорченный кадр отбрасывается молча, растёт `stats.rx_crc_errors`.
-
-Вместо опроса можно получать структуру «по событию» через обработчик. Обработчик — это ваша
-функция, которую библиотека сама вызывает в момент, когда пришла целая верная структура (как
-HAL-колбэк). Вы пишете её и кладёте указатель в конфигурацию перед `SCOM_Init`:
-
-```c
-static HostToStm_t s_rx;                       /* сюда сохраняем принятую структуру */
-
-/* Вызывается библиотекой сама, из прерывания USB, при каждой принятой структуре.
-   data указывает на принятую структуру и действителен ТОЛЬКО внутри этой функции. */
-static void on_rx_handler(void *user, const void *data)
-{
-    (void)user;
-    s_rx = *(const HostToStm_t *)data;         /* скопировать и сразу выйти */
-}
-
-cfg.on_rx = on_rx_handler;                     /* до SCOM_Init; без этого обработчика нет */
-```
-
-Раз функция работает в прерывании, она должна быть короткой (без ожиданий и вывода). Если
-`s_rx` читает главный цикл, доступ к ней защищайте сами; проще брать данные через
-`SCOM_GetRx`. Оба способа можно использовать вместе.
-
-Очереди нет: хранится только последняя принятая структура. Если приходят две структуры
-подряд, а вы читаете реже, вторая заменит первую. Если нельзя пропустить ни одной, складывайте
-принятые структуры в свою очередь из обработчика `on_rx`.
-
-### Что возвращает SCOM_Send
-
-| Результат | Что случилось |
-|---|---|
-| `SCOM_OK` | кадр принят USB на отправку |
-| `SCOM_BUSY` | предыдущий кадр ещё уходит либо USB отказал; кадр не отправлен, при следующей отправке передайте свежие данные |
-| `SCOM_ERROR` | ошибка аргументов, экземпляр не создан или `tx_size == 0` |
-
-Пока кадр не ушёл, его буфер занят. Поэтому обязателен вызов `SCOM_OnTxComplete` из
-`CDC_TransmitCplt_FS`. Если он не приходит дольше `tx_timeout_ms` (по умолчанию 50 мс: кабель
-выдернут или порт закрыт на компьютере), библиотека сама освобождает передатчик.
-
-### Из каких мест что можно вызывать (STM32)
-
-| Функция | Контекст |
-|---|---|
-| `SCOM_Init` | при старте, не из прерывания |
-| `SCOM_OnReceive` | из `CDC_Receive_xx` (прерывание USB) |
-| `SCOM_OnTxComplete` | из `CDC_TransmitCplt_xx` |
-| `SCOM_Send`, `SCOM_GetRx`, `SCOM_IsTimeout` | откуда угодно, в том числе из прерываний и из нескольких мест одновременно |
-
-Внутри библиотека на время копирования структуры (единицы микросекунд для 1 КБ) запрещает
-прерывания; при особых требованиях переопределите `SCOM_ENTER_CRITICAL` и `SCOM_EXIT_CRITICAL`.
-Сборка кадра и CRC32 выполняются в контексте вызвавшего `SCOM_Send` (ориентировочно десятки
-микросекунд на 1 КБ), учитывайте это при вызове из прерывания.
-
-### Компьютер: что важно
-
-- Вызывайте `SCOM_HostPoll` регулярно, не реже раза в 10-20 мс: при потоке 100 Гц и кадре около
-  1 КБ буфер драйвера заполнится за десятки миллисекунд. Если компьютер не читает порт, STM32
-  получает `SCOM_BUSY`.
-- `SCOM_HostSend` можно вызывать из любого потока, `SCOM_HostPoll` — из одного.
-- Потеря порта (кабель выдернут, STM32 перезагрузился): `SCOM_HostPoll` вернёт `-1`. Закройте
-  порт и откройте заново:
-
-```c
-if (SCOM_HostPoll(&com, 10) < 0)
-{
-    SCOM_HostClose(&com);
-    /* подождать и повторять SCOM_HostOpen(&com, &cfg), пока не вернёт 0 */
-}
-```
-
-### Если что-то не работает
-
-| Симптом | Причина и что сделать |
-|---|---|
-| Порт не открывается на Linux | нет прав (группа `dialout`), либо порт занят `ModemManager`, либо другой номер `ttyACM` |
-| Порт не открывается на Windows | неверный номер COM (см. «Диспетчер устройств») или порт открыт другой программой |
-| `stats.rx_size_errors` растёт | структуры на сторонах разные: проверьте, что `my_types.h` один и тот же, а `tx_size` / `rx_size` не перепутаны местами |
-| `stats.rx_crc_errors` растёт | помехи, плохой кабель или потеря байтов; единичные ошибки допустимы |
-| `SCOM_Send` всегда возвращает `SCOM_BUSY` | не вызывается `SCOM_OnTxComplete` в `CDC_TransmitCplt_FS`, либо компьютер не читает порт |
-| STM32 ничего не принимает | не вызывается `SCOM_OnReceive` в `CDC_Receive_FS`, либо `g_scom` равен `NULL` |
-
-Счётчики `h->stats` (STM32): `rx_frames`, `rx_crc_errors`, `rx_size_errors`, `tx_frames`,
-`tx_dropped` (отклонённые отправки), `tx_timeouts`. На компьютере: `rx_frames`, `rx_crc_errors`,
-`rx_size_errors`, `tx_frames`.
-
-## Формат кадра и требования к структурам
-
-```
-| 0xA5 | 0x5A | LEN (2 байта, LE) | структура (LEN байт) | CRC32 (4 байта, LE) |
-```
-
-CRC32 считается по полям `LEN` и структуре (IEEE 802.3, как `zlib.crc32`). Кадр с неверным CRC или
-с длиной, не равной ожидаемой `rx_size`, отбрасывается, приёмник ищет следующий признак начала.
-
-Структуры передаются побайтно как есть, поэтому:
-
-- оборачивайте их в `SCOM_PACK_BEGIN` / `SCOM_PACK_END`, используйте типы фиксированной ширины;
-- не используйте указатели, `bool`, `enum` неопределённой ширины, `long` и `wchar_t`;
-- порядок байт на обеих сторонах должен быть одинаков (little-endian: STM32 и x86-64);
-- размер структуры проверяйте при компиляции: `SCOM_STATIC_ASSERT`.
-
-Максимальный размер структуры — `SCOM_MAX_PAYLOAD_SIZE` (по умолчанию 1024). Уменьшение до 512
-сокращает расход ОЗУ: экземпляр на STM32 занимает около трёх буферов такого размера.
 
 ## Честные ограничения
 
 - Доставка не гарантируется: подтверждений и повторных передач нет. Испорченный кадр
   отбрасывается, следующий принимается как обычно.
-- Очереди отправки и приёма нет: хранится и отправляется самое свежее.
+- Очереди отправки и приёма нет: хранится и отправляется самое свежее. Если нельзя пропустить ни
+  одной принятой структуры, складывайте их в свою очередь из обработчика `on_rx`.
 - Потеря байта в середине кадра стоит до двух кадров, после чего связь восстанавливается сама.
 - Совместимость структур двух сторон проверяется только по длине; различие полей одинаковой
   суммарной длины библиотека не обнаружит.
-- STM32-часть рассчитана на стандартный USB CDC middleware от ST с функциями `CDC_Transmit_xx`,
-  `CDC_Receive_xx` и `CDC_TransmitCplt_xx`.
+- Порядок байт на обеих сторонах должен быть одинаков (little-endian: STM32 и x86-64); пересчёта
+  нет.
+- STM32-часть рассчитана на стандартный USB CDC middleware от ST: она вызывает
+  `CDC_Transmit_FS` / `CDC_Transmit_HS` из `usbd_cdc_if.c` и требует вызовов из `CDC_Receive_xx`
+  и `CDC_TransmitCplt_xx`. Для сборки нужен компилятор со слабыми ссылками (GCC, Clang,
+  armclang).
 - Хост: поддерживаются Linux (POSIX) и Windows 10/11; `SCOM_HostPoll` вызывается из одного
   потока на порт; повторное открытие порта после обрыва — задача приложения.
 - Windows: точность ожидания в приложении по умолчанию около 15 мс; для стабильного периода

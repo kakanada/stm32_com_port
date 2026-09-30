@@ -5,7 +5,7 @@
  *          COM-порту (CDC) с проверкой CRC32.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.3
+ * @version 1.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -16,8 +16,52 @@
 #include "scom_stm32.h"
 #include <string.h>
 
+/* Функции отправки из usbd_cdc_if.c (CubeMX). Объявлены слабыми: в проекте может быть только
+ * FS или только HS, отсутствующая функция при линковке превращается в NULL. */
+extern uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len) SCOM_WEAK;
+extern uint8_t CDC_Transmit_HS(uint8_t *Buf, uint16_t Len) SCOM_WEAK;
+
 /** Статический пул экземпляров (без malloc). */
 static SCOM_Handle_t s_pool[SCOM_MAX_INSTANCES];
+
+/**
+ * @brief  Проверяет, что для порта в проекте есть функция отправки CubeMX.
+ * @param  port  порт экземпляра
+ * @return 1 - функция есть; 0 - нет (порт не настроен в CubeMX)
+ */
+static uint8_t scom_port_available(SCOM_Port_t port)
+{
+    if (port == SCOM_PORT_USB_FS)
+    {
+        return (uint8_t)(CDC_Transmit_FS != NULL);
+    }
+    if (port == SCOM_PORT_USB_HS)
+    {
+        return (uint8_t)(CDC_Transmit_HS != NULL);
+    }
+    return 0U;
+}
+
+/**
+ * @brief  Отдаёт кадр в USB через функцию CubeMX выбранного порта.
+ * @param  h    хэндл экземпляра
+ * @param  len  длина кадра
+ * @return 0 - USB принял данные (USBD_OK); не 0 - занят или отказал
+ */
+static int scom_usb_transmit(SCOM_Handle_t *h, uint16_t len)
+{
+    uint8_t status;
+
+    if (h->config.port == SCOM_PORT_USB_HS)
+    {
+        status = CDC_Transmit_HS(h->tx_frame, len);
+    }
+    else
+    {
+        status = CDC_Transmit_FS(h->tx_frame, len);
+    }
+    return (status == 0U) ? 0 : -1;
+}
 
 /**
  * @brief  Проверяет, что хэндл принадлежит пулу и занят.
@@ -44,11 +88,7 @@ static uint8_t scom_config_valid(const SCOM_Config_t *c)
     {
         return 0U;
     }
-    if ((c->tx_size != 0U) && (c->tx_func == NULL))
-    {
-        return 0U;
-    }
-    return 1U;
+    return scom_port_available(c->port);
 }
 
 SCOM_Handle_t *SCOM_Init(const SCOM_Config_t *config)
@@ -69,8 +109,7 @@ SCOM_Handle_t *SCOM_Init(const SCOM_Config_t *config)
     for (i = 0U; i < SCOM_MAX_INSTANCES; i++)
     {
         if ((s_pool[i].used != 0U) &&
-            (s_pool[i].config.tx_func == config->tx_func) &&
-            (s_pool[i].config.user == config->user))
+            (s_pool[i].config.port == config->port))
         {
             result = &s_pool[i];    /* идемпотентность: уже зарегистрирован */
             break;
@@ -211,7 +250,7 @@ SCOM_Status_t SCOM_Send(SCOM_Handle_t *h, const void *data)
     /* Дальше tx_frame принадлежит только нам - сборка вне критической секции. */
     frame_len = SCOM_FrameBuild(h->tx_frame, data, h->config.tx_size);
 
-    if (h->config.tx_func(h->config.user, h->tx_frame, frame_len) != 0)
+    if (scom_usb_transmit(h, frame_len) != 0)
     {
         SCOM_ENTER_CRITICAL(primask);
         h->tx_busy = 0U;
