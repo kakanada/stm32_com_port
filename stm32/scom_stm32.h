@@ -150,9 +150,9 @@ typedef struct
     volatile uint32_t tx_start_ms;      /* когда начата текущая передача    */
     volatile uint32_t last_rx_ms;       /* когда принят последний валидный кадр */
     SCOM_Parser_t     parser;           /* разборщик входного потока        */
-    uint8_t           rx_payload[SCOM_MAX_PAYLOAD_SIZE]; /* сборка приёма   */
-    uint8_t           rx_latest[SCOM_MAX_PAYLOAD_SIZE];  /* последняя принятая */
-    uint8_t           tx_frame[SCOM_MAX_FRAME_SIZE];     /* кадр для USB    */
+    uint8_t           rx_payload[SCOM_MAX_PAYLOAD_SIZE] SCOM_ALIGN4; /* сборка приёма   */
+    uint8_t           rx_latest[SCOM_MAX_PAYLOAD_SIZE] SCOM_ALIGN4; /* последняя принятая */
+    uint8_t           tx_frame[SCOM_MAX_FRAME_SIZE] SCOM_ALIGN4;    /* кадр для USB    */
 } SCOM_Handle_t;
 
 /* ------------------------------------------------------------------------ */

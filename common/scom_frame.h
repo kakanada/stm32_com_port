@@ -42,6 +42,12 @@ extern "C" {
 #define SCOM_PACKED                  __attribute__((packed))
 #endif
 
+/** Выравнивание буферов по 4 байта: безопасно для структур без SCOM_PACKED
+ *  (float/uint32_t по выровненному адресу). Для другого компилятора переопределите. */
+#ifndef SCOM_ALIGN4
+#define SCOM_ALIGN4                  __attribute__((aligned(4)))
+#endif
+
 /** Проверка на этапе компиляции (C99, без static_assert). name - любой
  *  уникальный идентификатор. Пример:
  *  SCOM_STATIC_ASSERT(sizeof(My_t) <= SCOM_MAX_PAYLOAD_SIZE, my_t_size); */

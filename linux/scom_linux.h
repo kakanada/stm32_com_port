@@ -80,9 +80,9 @@ typedef struct
     uint8_t         rx_new;                     /* есть непрочитанная структура */
     uint64_t        last_rx_ms;                 /* монотонное время последнего кадра */
     SCOM_Parser_t   parser;                     /* разборщик входного потока */
-    uint8_t         rx_payload[SCOM_MAX_PAYLOAD_SIZE]; /* сборка приёма     */
-    uint8_t         rx_latest[SCOM_MAX_PAYLOAD_SIZE];  /* последняя принятая */
-    uint8_t         tx_frame[SCOM_MAX_FRAME_SIZE];     /* кадр для записи   */
+    uint8_t         rx_payload[SCOM_MAX_PAYLOAD_SIZE] SCOM_ALIGN4; /* сборка приёма     */
+    uint8_t         rx_latest[SCOM_MAX_PAYLOAD_SIZE] SCOM_ALIGN4; /* последняя принятая */
+    uint8_t         tx_frame[SCOM_MAX_FRAME_SIZE] SCOM_ALIGN4;    /* кадр для записи   */
 } SCOM_LinuxHandle_t;
 
 /**
