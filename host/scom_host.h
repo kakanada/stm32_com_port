@@ -6,7 +6,7 @@
  *          Потокобезопасна, без malloc, единый API для обеих ОС.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.2
+ * @version 1.3
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия

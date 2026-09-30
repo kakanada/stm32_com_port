@@ -171,7 +171,7 @@ USB), `data` валиден только во время вызова.
 
 ### `int SCOM_HostOpen(SCOM_HostHandle_t *h, const SCOM_HostConfig_t *config)`
 
-Открывает порт (8N1, без управления потока; на Windows включается DTR) и готовит экземпляр.
+Открывает порт (8N1, без управления потоком; на Windows включается DTR) и готовит экземпляр.
 Возвращает `0` или `-1` (при ошибке порта: Linux — `errno`, Windows — `GetLastError()`).
 
 ### `void SCOM_HostClose(SCOM_HostHandle_t *h)`

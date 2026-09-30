@@ -5,7 +5,7 @@
  *          монитор. Для своей структуры правится только example_draw().
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.2
+ * @version 1.3
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -37,15 +37,15 @@ void ExampleMonitor_Stop(void)
  *         функция, которую нужно менять под свою структуру.
  * @param  out       буфер для текста
  * @param  out_size  размер буфера
- * @param  t         последняя принятая телеметрия
- * @param  link_ok   1 - хост получает телеметрию
+ * @param  rx        последняя принятая от STM32 структура
+ * @param  rx_ok     1 - структуры от STM32 приходят
  * @param  stats     счётчики библиотеки
- * @param  cmd       последняя отправленная команда
+ * @param  tx        последняя отправленная STM32 структура
  * @return длина текста в буфере
  */
-static int example_draw(char *out, size_t out_size, const Example_Telemetry_t *t,
-                        int link_ok, const SCOM_HostStats_t *stats,
-                        const Example_Command_t *cmd)
+static int example_draw(char *out, size_t out_size, const Example_StmToHost_t *rx,
+                        int rx_ok, const SCOM_HostStats_t *stats,
+                        const Example_HostToStm_t *tx)
 {
     int n = 0;
     int i;
@@ -57,35 +57,37 @@ static int example_draw(char *out, size_t out_size, const Example_Telemetry_t *t
     n += snprintf(out + n, out_size - (size_t)n, "\033[H");   /* курсор в начало */
     LINE("STM32 COM PORT monitor          (Ctrl+C - exit)");
     LINE("------------------------------------------------------------");
-    LINE("STM32 -> host  : %s", link_ok ? "OK      " : "TIMEOUT ");
-    LINE("host -> STM32  : %s", t->host_link_ok ? "OK      " : "NO DATA ");
+    LINE("STM32 -> host  : %s", rx_ok ? "OK      " : "TIMEOUT ");
+    LINE("host -> STM32  : %s", rx->peer_ok ? "OK      " : "NO DATA ");
     LINE("Frames rx      : %10u   CRC err: %6u   size err: %6u",
          (unsigned)stats->rx_frames, (unsigned)stats->rx_crc_errors,
          (unsigned)stats->rx_size_errors);
     LINE("Frames tx      : %10u", (unsigned)stats->tx_frames);
     LINE("%s", "");
-    LINE("counter        : %10u", (unsigned)t->counter);
-    LINE("uptime_ms      : %10u", (unsigned)t->uptime_ms);
-    LINE("accel  x/y/z   : %9.3f %9.3f %9.3f",
-         (double)t->accel.x, (double)t->accel.y, (double)t->accel.z);
-    LINE("gyro   x/y/z   : %9.3f %9.3f %9.3f",
-         (double)t->gyro.x, (double)t->gyro.y, (double)t->gyro.z);
-    LINE("temperature    : %9.2f C", t->sensors.temperature_x100 / 100.0);
-    LINE("vbat           : %6u mV", (unsigned)t->sensors.vbat_mv);
-    LINE("status_flags   :       0x%02X  (1=link lost, 2=led on, 4=tx busy)",
-         (unsigned)t->sensors.status_flags);
-    n += snprintf(out + n, out_size - (size_t)n, "adc            :");
+    LINE("received from STM32:");
+    LINE("  counter      : %10u", (unsigned)rx->counter);
+    LINE("  uptime_ms    : %10u", (unsigned)rx->uptime_ms);
+    LINE("  vec_a x/y/z  : %9.3f %9.3f %9.3f",
+         (double)rx->vec_a.x, (double)rx->vec_a.y, (double)rx->vec_a.z);
+    LINE("  vec_b x/y/z  : %9.3f %9.3f %9.3f",
+         (double)rx->vec_b.x, (double)rx->vec_b.y, (double)rx->vec_b.z);
+    LINE("  temperature  : %9.2f C", rx->small.temperature_x100 / 100.0);
+    LINE("  vbat_mv      : %10u", (unsigned)rx->small.vbat_mv);
+    LINE("  flags        :       0x%02X  (1=no data from host, 2=led on)",
+         (unsigned)rx->small.flags);
+    n += snprintf(out + n, out_size - (size_t)n, "  adc          :");
     for (i = 0; i < 8; i++)
     {
-        n += snprintf(out + n, out_size - (size_t)n, " %5u", (unsigned)t->adc[i]);
+        n += snprintf(out + n, out_size - (size_t)n, " %5u", (unsigned)rx->adc[i]);
     }
     n += snprintf(out + n, out_size - (size_t)n, "\033[K\n");
+    LINE("  echo of what STM32 received from host: counter=%10u mode=%u",
+         (unsigned)rx->echo_counter, (unsigned)rx->echo_mode);
     LINE("%s", "");
-    LINE("sent command   : counter=%10u mode=%u led=%u setpoint=%6.2f",
-         (unsigned)cmd->counter, (unsigned)cmd->mode, (unsigned)cmd->led_on,
-         (double)cmd->setpoint);
-    LINE("echo from STM32: counter=%10u mode=%u",
-         (unsigned)t->cmd_counter, (unsigned)t->cmd_mode);
+    LINE("sent to STM32:");
+    LINE("  counter=%10u mode=%u led_on=%u value=%6.2f",
+         (unsigned)tx->counter, (unsigned)tx->mode, (unsigned)tx->led_on,
+         (double)tx->value);
 #undef LINE
     return n;
 }
@@ -95,16 +97,16 @@ int ExampleMonitor_Run(const char *device)
     static SCOM_HostHandle_t com;
     static char screen[4096];
     SCOM_HostConfig_t cfg;
-    Example_Telemetry_t telemetry;
-    Example_Command_t   command;
+    Example_StmToHost_t rx_data;
+    Example_HostToStm_t tx_data;
     uint64_t next_send_ms;
     uint64_t next_draw_ms;
     int result = 0;
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.device        = device;
-    cfg.tx_size       = sizeof(Example_Command_t);     /* то, что принимает STM32 */
-    cfg.rx_size       = sizeof(Example_Telemetry_t);   /* то, что шлёт STM32 */
+    cfg.tx_size       = sizeof(Example_HostToStm_t);   /* что отправляем STM32 */
+    cfg.rx_size       = sizeof(Example_StmToHost_t);   /* что принимаем от STM32 */
     cfg.rx_timeout_ms = EXAMPLE_LINK_TIMEOUT_MS;
 
     if (SCOM_HostOpen(&com, &cfg) != 0)
@@ -112,8 +114,8 @@ int ExampleMonitor_Run(const char *device)
         return 1;
     }
 
-    memset(&telemetry, 0, sizeof(telemetry));
-    memset(&command, 0, sizeof(command));
+    memset(&rx_data, 0, sizeof(rx_data));
+    memset(&tx_data, 0, sizeof(tx_data));
 
     /* Весь экран уходит одним выводом: буфер stdout равен размеру экрана. */
     setvbuf(stdout, NULL, _IOFBF, sizeof(screen));
@@ -136,23 +138,23 @@ int ExampleMonitor_Run(const char *device)
             break;
         }
         now = SCOM_HostNowMs();     /* после ожидания, чтобы период не плыл */
-        (void)SCOM_HostGetRx(&com, &telemetry);
+        (void)SCOM_HostGetRx(&com, &rx_data);
 
         if (now >= next_send_ms)
         {
             next_send_ms = now + EXAMPLE_SEND_PERIOD_MS;
-            command.counter++;
-            command.mode     = 1U;
-            command.led_on   = (uint8_t)(((command.counter / 50U) & 1U) != 0U);  /* 0,5 с */
-            command.setpoint = 1.0f + (float)((command.counter / 100U) % 10U);    /* 1..10 */
-            (void)SCOM_HostSend(&com, &command);
+            tx_data.counter++;
+            tx_data.mode   = 1U;
+            tx_data.led_on = (uint8_t)(((tx_data.counter / 50U) & 1U) != 0U);   /* 0,5 с */
+            tx_data.value  = 1.0f + (float)((tx_data.counter / 100U) % 10U);    /* 1..10 */
+            (void)SCOM_HostSend(&com, &tx_data);
         }
 
         if (now >= next_draw_ms)
         {
-            const int len = example_draw(screen, sizeof(screen), &telemetry,
+            const int len = example_draw(screen, sizeof(screen), &rx_data,
                                          SCOM_HostIsTimeout(&com) == 0,
-                                         &com.stats, &command);
+                                         &com.stats, &tx_data);
 
             next_draw_ms = now + EXAMPLE_DRAW_PERIOD_MS;
             fwrite(screen, 1U, (size_t)len, stdout);
