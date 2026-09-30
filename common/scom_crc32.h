@@ -5,7 +5,7 @@
  *          хостовой частей библиотеки.
  * @author  Mechanic
  * @date    30.09.2026
- * @version 1.1
+ * @version 1.2
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия

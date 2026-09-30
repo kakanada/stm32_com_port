@@ -147,14 +147,67 @@ for (;;)
 - Linux: `gcc -std=c99 -pthread` с файлами `common/*.c` и `host/*.c`.
 - Windows (Visual Studio): добавьте те же файлы в проект x64, стандарт C11 или новее. Для
   русских комментариев в исходниках включите `/utf-8`.
-- Готовый пример с консольным монитором — в папке `examples/`. Linux: `make`, затем
-  `./host_example /dev/ttyACM0`. Linux и Windows: `cmake -S . -B build`, затем
-  `cmake --build build --config Release`; запуск: `host_example.exe COM5`.
+- Готовые примеры — в папке `examples/` (см. ниже).
 
 Номер COM-порта на Windows смотрите в «Диспетчере устройств» (раздел «Порты (COM и LPT)»,
 устройство «USB-СОМ порт»), драйвер `usbser` входит в состав Windows 10/11. На Linux порт
 доступен пользователям группы `dialout`; менеджер `ModemManager` может занимать
 `/dev/ttyACM*` — при необходимости отключите его для этого устройства правилом udev.
+
+### Готовые примеры
+
+Три примера работают друг с другом «из коробки»: общие структуры лежат в
+`examples/example_types.h` (одинаковый файл для всех сторон). STM32 раз в 10 мс отправляет
+заглушку телеметрии (счётчик, вложенные векторы, датчики, АЦП) и принимает команду; хост раз в
+10 мс отправляет команду и показывает телеметрию в консоли на месте, без мерцания.
+
+| Пример | Файлы | Сборка и запуск |
+|---|---|---|
+| STM32 | `examples/stm32/example_stm32.c/.h` | файлы проекта CubeMX, см. ниже |
+| Linux (Ubuntu) | `examples/linux/main_linux.c`, `examples/monitor/*` | `cd examples/linux && make`, затем `./example_linux /dev/ttyACM0` |
+| Windows 10/11 x64 | `examples/windows/main_windows.c`, `examples/monitor/*` | в «x64 Native Tools Command Prompt for VS»: `examples\windows\build_msvc.bat`, затем `build\example_windows.exe COM5` |
+
+Для Linux и Windows работает и CMake: `cmake -S examples -B build`, затем
+`cmake --build build --config Release`.
+
+Подключение STM32-примера (файлы `common/*`, `stm32/*`, `examples/example_types.h`,
+`examples/stm32/*` добавляются в проект, пути `common`, `stm32`, `examples`, `examples/stm32` — в
+Include paths):
+
+```c
+/* main.c */
+#include "example_stm32.h"
+...
+MX_USB_DEVICE_Init();
+Example_Init();                       /* после инициализации USB */
+while (1)
+{
+    Example_Process();                /* применить команду и раз в 10 мс отправить телеметрию */
+}
+
+/* usbd_cdc_if.c */
+#include "example_stm32.h"
+static int8_t CDC_Receive_FS(uint8_t *Buf, uint32_t *Len)
+{
+    Example_UsbOnReceive(Buf, *Len);                   /* добавить */
+    ...
+}
+static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
+{
+    Example_UsbOnTxComplete();                         /* добавить */
+    return USBD_OK;
+}
+```
+
+Необязательно: чтобы светодиод включался командой хоста, определите в настройках проекта
+`EXAMPLE_LED_PORT` и `EXAMPLE_LED_PIN` (например, `GPIOD` и `GPIO_PIN_12`); для USB HS
+определите `EXAMPLE_CDC_TRANSMIT=CDC_Transmit_HS`.
+
+Что должно быть видно на мониторе: обе строки связи `OK`, растут `Frames rx` / `Frames tx`,
+`CRC err` остаётся нулём, счётчик команды из строки `echo from STM32` совпадает с отправленным
+(так подтверждается приём в обе стороны), амплитуда ускорения меняется вместе с уставкой хоста
+(1..10 каждую секунду). Если отключить кабель или остановить хост, STM32 через 200 мс гасит
+светодиод и выставляет флаг потери связи.
 
 Полный справочник по функциям и типам — [API_REFERENCE.md](API_REFERENCE.md).
 

@@ -3,5 +3,5 @@ build/
 *.obj
 *.elf
 *.bin
-host_example
-host_example.exe
+example_linux
+example_windows.exe
